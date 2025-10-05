@@ -1,0 +1,267 @@
+<!-- roboprint-local.html -->
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Local Print — Robonarim</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      body {
+        font-family: system-ui, Arial, "Segoe UI";
+        padding: 16px;
+        direction: rtl;
+      }
+      label {
+        display: block;
+        margin-top: 8px;
+        font-weight: 600;
+      }
+      input[type="text"],
+      textarea,
+      select {
+        width: 100%;
+        padding: 8px;
+        box-sizing: border-box;
+        margin-top: 6px;
+      }
+      .row {
+        margin-bottom: 12px;
+      }
+      button {
+        padding: 8px 12px;
+        background: #0ea5a3;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #64748b;
+        margin-left: 8px;
+      }
+      #log {
+        background: #111;
+        color: #dfe;
+        padding: 8px;
+        height: 160px;
+        overflow: auto;
+        white-space: pre-wrap;
+        border-radius: 6px;
+        margin-top: 12px;
+      }
+      .muted {
+        color: #666;
+        font-size: 13px;
+        margin-top: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Robonarim — Local Print</h2>
+
+    <div class="row">
+      <label>اختَر الطابعة</label>
+      <select id="printers"></select>
+      <button id="refresh" style="margin-top: 8px">Refresh</button>
+    </div>
+
+    <div class="row">
+      <label>Mode</label>
+      <select id="modeSelect">
+        <option value="main">Main (فاتورة)</option>
+        <option value="ticket">Ticket (ورقة صغيرة — 4cm × 2cm)</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label>اسم الزبون</label>
+      <input
+        id="customerName"
+        type="text"
+        value="Ahmet Yilmaz"
+        maxlength="60"
+      />
+    </div>
+
+    <div class="row">
+      <label>رمز الزبون (7 أرقام)</label>
+      <input id="customerCode" type="text" value="1234567" maxlength="7" />
+      <div class="muted">
+        إذا أدخلت أقل من 7 أرقام فسيتم ملؤها بصفر من اليسار تلقائياً.
+      </div>
+    </div>
+
+    <div class="row">
+      <label>لوجو للطباعة (اختياري - PNG/JPEG)</label>
+      <input id="logoFile" type="file" accept="image/*" />
+      <div class="muted">
+        رفع الصورة سيُرسلها للخادم كـ Base64. الخادم الحالي يتجاهل طباعة الصورة
+        في مود التذكرة لاقتصار المساحة. لطباعتها بدقة نحتاج تفعيل تحويل الصورة
+        إلى raster على الخادم (أقدر أفعّله لو بتحب).
+      </div>
+    </div>
+
+    <div class="row">
+      <label>نص الطباعة (مُولَّد تلقائياً حسب المود — يمكنك التعديل)</label>
+      <textarea id="text" rows="8" cols="40"></textarea>
+    </div>
+
+    <div class="row">
+      <button id="print">Print</button>
+      <button id="printRaw" class="secondary">Print Raw (بدون لوجو)</button>
+    </div>
+
+    <pre id="log">Logs...</pre>
+
+    <script>
+      // ===== util: date format DD/MM/YYYY =====
+      function todayDDMMYYYY() {
+        const d = new Date();
+        const dd = String(d.getDate()).padStart(2, "0");
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const yyyy = d.getFullYear();
+        return `${dd}/${mm}/${yyyy}`;
+      }
+
+      // ===== template builders =====
+      function buildMainTemplate(name, code, date) {
+        code = code.toString().replace(/\D/g, "").padStart(7, "0");
+        return [
+          `   ROBONARIM`,
+          `-------------------------------`,
+          `Musteri Adi : ${name || "Ahmet Yilmaz"}`,
+          `Musteri Kodu: ${code}`,
+          `Teslim Tarihi: ${date}`,
+          ``,
+          `Robonarim`,
+          `-------------------------------`,
+        ].join("\n");
+      }
+
+      // compact ticket template (fit small area). Few lines, compact layout.
+      function buildTicketTemplate(name, code, date) {
+        code = code.toString().replace(/\D/g, "").padStart(7, "0");
+        // We keep it very short and central.
+        return [
+          `${name || "Ahmet Yilmaz"}`,
+          `#${code}`,
+          `${date}`,
+          ``,
+          `--- Robonarim ---`,
+        ].join("\n");
+      }
+
+      // ===== UI elements =====
+      const printersSelect = document.getElementById("printers");
+      const refreshBtn = document.getElementById("refresh");
+      const modeSelect = document.getElementById("modeSelect");
+      const customerNameInput = document.getElementById("customerName");
+      const customerCodeInput = document.getElementById("customerCode");
+      const textArea = document.getElementById("text");
+      const printBtn = document.getElementById("print");
+      const printRawBtn = document.getElementById("printRaw");
+      const logEl = document.getElementById("log");
+      const logoFileInput = document.getElementById("logoFile");
+
+      function log(t) {
+        logEl.textContent =
+          new Date().toLocaleTimeString() +
+          " — " +
+          t +
+          "\n" +
+          logEl.textContent;
+      }
+
+      function refreshTemplate() {
+        const name = customerNameInput.value;
+        const code = customerCodeInput.value;
+        const date = todayDDMMYYYY();
+        const mode = modeSelect.value;
+        if (mode === "ticket") {
+          textArea.value = buildTicketTemplate(name, code, date);
+        } else {
+          textArea.value = buildMainTemplate(name, code, date);
+        }
+      }
+
+      // event listeners
+      customerNameInput.addEventListener("input", refreshTemplate);
+      customerCodeInput.addEventListener("input", refreshTemplate);
+      modeSelect.addEventListener("change", refreshTemplate);
+
+      // load printers
+      async function loadPrinters() {
+        try {
+          const r = await fetch("/printers");
+          const ps = await r.json();
+          printersSelect.innerHTML = "";
+          (ps || []).forEach((p) => {
+            const o = document.createElement("option");
+            o.value = p.name || p;
+            o.text = p.name || p;
+            printersSelect.appendChild(o);
+          });
+          log("Printers loaded.");
+        } catch (e) {
+          log("Error loading printers: " + e);
+        }
+      }
+      refreshBtn.onclick = loadPrinters;
+
+      // helper to read logo as base64 if user selected one
+      function readLogoBase64() {
+        return new Promise((resolve, reject) => {
+          const file = logoFileInput.files[0];
+          if (!file) return resolve(null);
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.onerror = (err) => reject(err);
+          fr.readAsDataURL(file);
+        });
+      }
+
+      // print (with possible image)
+      printBtn.onclick = async () => {
+        try {
+          const printer = printersSelect.value || "";
+          const text = textArea.value;
+          const mode = modeSelect.value || "main";
+          log("Preparing print request for mode=" + mode);
+          const logoData = await readLogoBase64(); // null or dataURL
+          const body = { printer, text, mode, logo: logoData }; // logo optional
+          const res = await fetch("/print", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const j = await res.json();
+          log("Server response: " + JSON.stringify(j));
+        } catch (e) {
+          log("Print failed: " + e);
+        }
+      };
+
+      // print raw (no logo)
+      printRawBtn.onclick = async () => {
+        try {
+          const printer = printersSelect.value || "";
+          const text = textArea.value;
+          const mode = modeSelect.value || "main";
+          const res = await fetch("/print", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ printer, text, mode }),
+          });
+          const j = await res.json();
+          log("Raw print response: " + JSON.stringify(j));
+        } catch (e) {
+          log("Raw print failed: " + e);
+        }
+      };
+
+      // initial actions
+      refreshTemplate();
+      loadPrinters();
+    </script>
+  </body>
+</html>
